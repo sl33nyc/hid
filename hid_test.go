@@ -7,6 +7,7 @@
 package hid
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -25,4 +26,8 @@ func TestThreadedEnumerate(t *testing.T) {
 		}(i)
 	}
 	pend.Wait()
+}
+
+func TestLibusbCapabilities(t *testing.T) {
+	fmt.Println(LibusbCapabilities())
 }

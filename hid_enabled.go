@@ -4,6 +4,7 @@
 // This file is released under the 3-clause BSD license. Note however that Linux
 // support depends on libusb, released under LGNU GPL 2.1 or later.
 
+//go:build (linux && cgo) || (darwin && !ios && cgo) || (windows && cgo)
 // +build linux,cgo darwin,!ios,cgo windows,cgo
 
 package hid
@@ -13,7 +14,7 @@ package hid
 
 #cgo linux CFLAGS: -I./libusb/libusb -DDEFAULT_VISIBILITY="" -DOS_LINUX -D_GNU_SOURCE -DPOLL_NFDS_TYPE=int
 #cgo linux,!android LDFLAGS: -lrt
-#cgo darwin CFLAGS: -DOS_DARWIN
+#cgo darwin CFLAGS: -DOS_DARWIN -I./libusb/libusb -DDEFAULT_VISIBILITY="" -DOS_DARWIN -D_GNU_SOURCE -DPOLL_NFDS_TYPE=int
 #cgo darwin LDFLAGS: -framework CoreFoundation -framework IOKit
 #cgo windows CFLAGS: -DOS_WINDOWS
 #cgo windows LDFLAGS: -lsetupapi
@@ -36,9 +37,41 @@ package hid
 	#include "hidapi/libusb/hid.c"
 #elif OS_DARWIN
 	#include "hidapi/mac/hid.c"
+
+	#include <poll.h>
+	#include "os/threads_posix.c"
+	#include "os/poll_posix.c"
+
+	#include "core.c"
+	#include "descriptor.c"
+	#include "hotplug.c"
+	#include "io.c"
+	#include "sync.c"
+
+	#include "os/darwin_usb.c"
 #elif OS_WINDOWS
 	#include "hidapi/windows/hid.c"
 #endif
+
+extern int go_callback(int vendorId, int productId, libusb_hotplug_event event);
+
+static inline int bridge_callback(
+	libusb_context *ctx,
+	libusb_device *dev,
+	libusb_hotplug_event event,
+	void *user_data) {
+	struct libusb_device_descriptor desc;
+	int rc;
+	(void)ctx;
+	(void)dev;
+	(void)event;
+	(void)user_data;
+	rc = libusb_get_device_descriptor(dev, &desc);
+	if (LIBUSB_SUCCESS != rc) {
+		fprintf(stderr, "Error getting device descriptor\n");
+	}
+	return go_callback(desc.idVendor, desc.idProduct, event);
+}
 */
 import "C"
 
@@ -309,4 +342,36 @@ func (dev *Device) GetFeatureReport(b []byte) (int, error) {
 	}
 
 	return read, nil
+}
+
+type callbackKey struct {
+	vendorId, productId uint16
+	event               HotplugEvent
+}
+
+var mu sync.Mutex
+var fns = make(map[callbackKey]HotplugEventCallbackFn)
+
+// export go_callback
+func go_callback(vendorId, productId C.int, event C.libusb_hotplug_event) C.int {
+	fn := lookup(vendorId, productId, event)
+	return C.int(fn(DeviceInfo{VendorID: uint16(vendorId), ProductID: uint16(productId)}, HotplugEvent(event)))
+}
+
+func RegisterCallback(vendorId, productId uint16, event HotplugEvent, callback HotplugEventCallbackFn) {
+	mu.Lock()
+	defer mu.Unlock()
+	fns[callbackKey{vendorId: vendorId, productId: productId, event: event}] = callback
+}
+
+func lookup(vendorId, productId C.int, event C.libusb_hotplug_event) HotplugEventCallbackFn {
+	mu.Lock()
+	defer mu.Unlock()
+	return fns[callbackKey{vendorId: uint16(vendorId), productId: uint16(productId), event: HotplugEvent(event)}]
+}
+
+func UnregisterCallback(vendorId, productId uint16, event HotplugEvent) {
+	mu.Lock()
+	defer mu.Unlock()
+	delete(fns, callbackKey{vendorId: vendorId, productId: productId, event: event})
 }

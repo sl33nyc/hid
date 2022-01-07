@@ -35,3 +35,12 @@ type DeviceInfo struct {
 	// only if the device contains more than one interface.
 	Interface int
 }
+
+type HotplugEvent uint8
+
+const (
+	DEVICE_ATTACHED  HotplugEvent = 0x01
+	DEVICE_DETTACHED              = 0x02
+)
+
+type HotplugEventCallbackFn func(DeviceInfo, HotplugEvent) int
